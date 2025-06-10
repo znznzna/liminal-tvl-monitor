@@ -1,0 +1,12 @@
+{
+  "name": "liminal-tvl-monitor",
+  "version": "1.0.0",
+  "description": "Liminal Protocol TVL Monitor",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vercel dev"
+  },
+  "keywords": ["liminal", "tvl", "monitor", "webhook"],
+  "author": "Your Name",
+  "license": "MIT"
+}
