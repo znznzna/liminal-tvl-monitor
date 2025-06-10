@@ -8,15 +8,18 @@ on:
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    
+    permissions:
+      contents: write  # ファイル書き込み権限を明示的に指定
+      
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0  # 全履歴を取得
           
       - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+        run: sudo apt-get update && sudo apt-get install -y jq bc
           
       - name: Get stored TVL value
         id: get_tvl
@@ -38,37 +41,16 @@ jobs:
           
           echo "Calling API: $API_URL"
           
-          # APIを呼び出し、レスポンスヘッダーも確認
+          # APIを呼び出し
           HTTP_STATUS=$(curl -s -w "%{http_code}" -o response.json "$API_URL")
           
           echo "HTTP Status: $HTTP_STATUS"
-          echo "Response content (first 500 chars):"
-          head -c 500 response.json
-          echo ""
-          
-          # HTMLが返ってきた場合（認証エラー）をチェック
-          if grep -q "<!doctype html>" response.json; then
-            echo "Error: API returned HTML instead of JSON (likely authentication required)"
-            echo "Please check Vercel project settings and disable authentication"
-            exit 1
-          fi
           
           if [ "$HTTP_STATUS" -ne 200 ]; then
             echo "API call failed with status: $HTTP_STATUS"
-            echo "Full response content:"
             cat response.json
             exit 1
           fi
-          
-          # JSONとして有効かチェック
-          if ! jq empty response.json; then
-            echo "Response is not valid JSON"
-            echo "Full response:"
-            cat response.json
-            exit 1
-          fi
-          
-          echo "Valid JSON response received"
           
           # JSONから値を抽出
           CURRENT_TVL=$(jq -r '.currentTvl // 0' response.json)
@@ -79,71 +61,96 @@ jobs:
           echo "increased=$INCREASED" >> $GITHUB_OUTPUT
           echo "success=$SUCCESS" >> $GITHUB_OUTPUT
           
-          echo "Parsed values:"
+          echo "API Results:"
           echo "- Current TVL: $CURRENT_TVL"
           echo "- Increased: $INCREASED"
           echo "- Success: $SUCCESS"
           
-          # APIが失敗を返した場合
-          if [ "$SUCCESS" != "true" ]; then
-            echo "API returned success=false"
-            exit 1
-          fi
-          
-      - name: Validate TVL value
+      - name: Save TVL value to file
         run: |
           CURRENT_TVL="${{ steps.api_call.outputs.current_tvl }}"
+          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
           
-          # TVL値が数値かチェック
-          if ! [[ "$CURRENT_TVL" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-            echo "Invalid TVL value: $CURRENT_TVL"
-            exit 1
-          fi
-          
-          echo "TVL value validated: $CURRENT_TVL"
-          
-      - name: Save current TVL value
-        run: |
-          CURRENT_TVL="${{ steps.api_call.outputs.current_tvl }}"
+          echo "Saving TVL value: $CURRENT_TVL"
           echo "$CURRENT_TVL" > tvl_value.txt
-          echo "Saved TVL value to file: $CURRENT_TVL"
           
-      - name: Configure Git
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+          # 詳細ログファイルも作成
+          echo "TVL History Log" > tvl_history.txt
+          echo "=================" >> tvl_history.txt
+          echo "Last Updated: $TIMESTAMP" >> tvl_history.txt
+          echo "Current TVL: $CURRENT_TVL" >> tvl_history.txt
+          echo "Previous TVL: ${{ steps.get_tvl.outputs.last_tvl }}" >> tvl_history.txt
+          echo "Increased: ${{ steps.api_call.outputs.increased }}" >> tvl_history.txt
+          echo "" >> tvl_history.txt
           
-      - name: Commit TVL value if changed
+          # ファイル作成確認
+          if [ -f tvl_value.txt ]; then
+            echo "✅ tvl_value.txt created successfully"
+            echo "Content: $(cat tvl_value.txt)"
+          else
+            echo "❌ Failed to create tvl_value.txt"
+            exit 1
+          fi
+          
+      - name: Commit and push files
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           CURRENT_TVL="${{ steps.api_call.outputs.current_tvl }}"
+          INCREASED="${{ steps.api_call.outputs.increased }}"
           
-          # ファイルに変更があるかチェック
-          if git diff --quiet tvl_value.txt; then
-            echo "No changes to TVL value file"
+          # Git設定
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          echo "=== Git Status Before ==="
+          git status
+          
+          # ファイルをstaging area に追加
+          git add tvl_value.txt tvl_history.txt
+          
+          echo "=== Git Status After Add ==="
+          git status
+          
+          # 変更があるかチェック
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
           else
-            echo "TVL value file changed, committing..."
-            git add tvl_value.txt
+            echo "Changes detected, committing..."
             
-            if git commit -m "Update TVL value to $CURRENT_TVL"; then
-              echo "Successfully committed TVL value"
+            COMMIT_MSG="📊 Update TVL: $CURRENT_TVL"
+            if [ "$INCREASED" = "true" ]; then
+              COMMIT_MSG="🚀 TVL Increased: $CURRENT_TVL"
+            fi
+            
+            if git commit -m "$COMMIT_MSG"; then
+              echo "✅ Successfully committed changes"
               
+              # プッシュを試行
+              echo "Pushing to GitHub..."
               if git push; then
-                echo "Successfully pushed changes"
+                echo "✅ Successfully pushed to GitHub"
               else
-                echo "Warning: Failed to push changes, but continuing..."
+                echo "❌ Failed to push to GitHub"
+                echo "Git remote info:"
+                git remote -v
+                echo "Git branch info:"
+                git branch -v
+                exit 1
               fi
             else
-              echo "Warning: Failed to commit changes, but continuing..."
+              echo "❌ Failed to commit changes"
+              exit 1
             fi
           fi
           
-      - name: Log monitoring result
+      - name: Summary
         run: |
           CURRENT_TVL="${{ steps.api_call.outputs.current_tvl }}"
           INCREASED="${{ steps.api_call.outputs.increased }}"
           LAST_TVL="${{ steps.get_tvl.outputs.last_tvl }}"
           
-          echo "=== TVL Monitoring Result ==="
+          echo "=== TVL Monitoring Summary ==="
           echo "Previous TVL: $LAST_TVL"
           echo "Current TVL: $CURRENT_TVL"
           echo "Increased: $INCREASED"
@@ -152,10 +159,16 @@ jobs:
             DIFFERENCE=$(echo "$CURRENT_TVL - $LAST_TVL" | bc -l)
             echo "🚀 TVL increased by $DIFFERENCE! Discord notification sent."
           else
-            echo "📊 TVL check completed. No increase detected."
+            echo "📊 No TVL increase detected."
+          fi
+          
+          # ファイルが正しく作成されているか最終確認
+          if [ -f tvl_value.txt ]; then
+            echo "✅ tvl_value.txt exists with value: $(cat tvl_value.txt)"
+          else
+            echo "❌ tvl_value.txt not found!"
           fi
           
       - name: Cleanup
-        run: |
-          rm -f response.json
+        run: rm -f response.json
         if: always()
