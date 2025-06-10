@@ -1,0 +1,74 @@
+name: Liminal TVL Monitor
+
+on:
+  schedule:
+    - cron: '*/2 * * * *'  # 2分毎に実行
+  workflow_dispatch:  # 手動実行も可能
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Get stored TVL value
+        id: get_tvl
+        run: |
+          if [ -f tvl_value.txt ]; then
+            LAST_TVL=$(cat tvl_value.txt)
+          else
+            LAST_TVL=0
+          fi
+          echo "last_tvl=$LAST_TVL" >> $GITHUB_OUTPUT
+          echo "Previous TVL: $LAST_TVL"
+          
+      - name: Call TVL Monitor API
+        id: api_call
+        run: |
+          LAST_TVL="${{ steps.get_tvl.outputs.last_tvl }}"
+          echo "Calling API with lastTvl=$LAST_TVL"
+          
+          RESPONSE=$(curl -s "https://liminal-tvl-monitor-hcm5pixng-znznznas-projects.vercel.app/api/monitor-tvl?lastTvl=$LAST_TVL")
+          echo "API Response: $RESPONSE"
+          
+          # JSONから現在のTVLを抽出
+          CURRENT_TVL=$(echo "$RESPONSE" | jq -r '.currentTvl // 0')
+          INCREASED=$(echo "$RESPONSE" | jq -r '.increased // false')
+          
+          echo "current_tvl=$CURRENT_TVL" >> $GITHUB_OUTPUT
+          echo "increased=$INCREASED" >> $GITHUB_OUTPUT
+          
+          echo "Current TVL: $CURRENT_TVL"
+          echo "Increased: $INCREASED"
+          
+      - name: Save current TVL value
+        run: |
+          CURRENT_TVL="${{ steps.api_call.outputs.current_tvl }}"
+          echo "$CURRENT_TVL" > tvl_value.txt
+          echo "Saved TVL value: $CURRENT_TVL"
+          
+      - name: Commit TVL value if changed
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          if git diff --quiet tvl_value.txt; then
+            echo "No changes to TVL value"
+          else
+            git add tvl_value.txt
+            git commit -m "Update TVL value to ${{ steps.api_call.outputs.current_tvl }}"
+            git push
+            echo "TVL value updated and committed"
+          fi
+          
+      - name: Log monitoring result
+        run: |
+          if [ "${{ steps.api_call.outputs.increased }}" = "true" ]; then
+            echo "🚀 TVL increased! Notification sent to Discord."
+          else
+            echo "📊 TVL check completed. No increase detected."
+          fi
