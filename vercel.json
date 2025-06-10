@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/monitor-tvl.js": {
+      "maxDuration": 30
+    }
+  }
+}
