@@ -1,7 +1,7 @@
 TVL History Log
 =================
-Last Updated: 2025-06-10 20:53:15 UTC
-Current TVL: 20030871.537299704
-Previous TVL: 20030625.220723823
-Increased: true
+Last Updated: 2025-06-10 21:33:35 UTC
+Current TVL: 20030671.537299704
+Previous TVL: 20030871.537299704
+Increased: false
 
