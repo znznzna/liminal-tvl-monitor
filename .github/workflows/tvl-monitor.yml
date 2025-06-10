@@ -34,40 +34,46 @@ jobs:
         id: api_call
         run: |
           LAST_TVL="${{ steps.get_tvl.outputs.last_tvl }}"
-          API_URL="https://liminal-tvl-monitor-hcm5pixng-znznznas-projects.vercel.app/api/monitor-tvl?lastTvl=$LAST_TVL"
+          API_URL="https://liminal-tvl-monitor-znznznas-projects.vercel.app/api/monitor-tvl?lastTvl=$LAST_TVL"
           
           echo "Calling API: $API_URL"
           
-          # APIを呼び出し、エラーハンドリングを追加
+          # APIを呼び出し、レスポンスヘッダーも確認
           HTTP_STATUS=$(curl -s -w "%{http_code}" -o response.json "$API_URL")
           
           echo "HTTP Status: $HTTP_STATUS"
+          echo "Response content (first 500 chars):"
+          head -c 500 response.json
+          echo ""
+          
+          # HTMLが返ってきた場合（認証エラー）をチェック
+          if grep -q "<!doctype html>" response.json; then
+            echo "Error: API returned HTML instead of JSON (likely authentication required)"
+            echo "Please check Vercel project settings and disable authentication"
+            exit 1
+          fi
           
           if [ "$HTTP_STATUS" -ne 200 ]; then
             echo "API call failed with status: $HTTP_STATUS"
-            echo "Response content:"
+            echo "Full response content:"
             cat response.json
             exit 1
           fi
           
-          echo "API Response:"
-          cat response.json
-          
-          # JSONから値を抽出、エラーハンドリング付き
-          if ! CURRENT_TVL=$(jq -r '.currentTvl // 0' response.json); then
-            echo "Failed to parse currentTvl from response"
+          # JSONとして有効かチェック
+          if ! jq empty response.json; then
+            echo "Response is not valid JSON"
+            echo "Full response:"
+            cat response.json
             exit 1
           fi
           
-          if ! INCREASED=$(jq -r '.increased // false' response.json); then
-            echo "Failed to parse increased from response"
-            exit 1
-          fi
+          echo "Valid JSON response received"
           
-          if ! SUCCESS=$(jq -r '.success // false' response.json); then
-            echo "Failed to parse success from response"
-            exit 1
-          fi
+          # JSONから値を抽出
+          CURRENT_TVL=$(jq -r '.currentTvl // 0' response.json)
+          INCREASED=$(jq -r '.increased // false' response.json)
+          SUCCESS=$(jq -r '.success // false' response.json)
           
           echo "current_tvl=$CURRENT_TVL" >> $GITHUB_OUTPUT
           echo "increased=$INCREASED" >> $GITHUB_OUTPUT
