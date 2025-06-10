@@ -15,60 +15,141 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+          
       - name: Get stored TVL value
         id: get_tvl
         run: |
           if [ -f tvl_value.txt ]; then
             LAST_TVL=$(cat tvl_value.txt)
+            echo "Found existing TVL value: $LAST_TVL"
           else
             LAST_TVL=0
+            echo "No existing TVL file, using default: 0"
           fi
           echo "last_tvl=$LAST_TVL" >> $GITHUB_OUTPUT
-          echo "Previous TVL: $LAST_TVL"
           
       - name: Call TVL Monitor API
         id: api_call
         run: |
           LAST_TVL="${{ steps.get_tvl.outputs.last_tvl }}"
-          echo "Calling API with lastTvl=$LAST_TVL"
+          API_URL="https://liminal-tvl-monitor-hcm5pixng-znznznas-projects.vercel.app/api/monitor-tvl?lastTvl=$LAST_TVL"
           
-          RESPONSE=$(curl -s "https://liminal-tvl-monitor-hcm5pixng-znznznas-projects.vercel.app/api/monitor-tvl?lastTvl=$LAST_TVL")
-          echo "API Response: $RESPONSE"
+          echo "Calling API: $API_URL"
           
-          # JSONから現在のTVLを抽出
-          CURRENT_TVL=$(echo "$RESPONSE" | jq -r '.currentTvl // 0')
-          INCREASED=$(echo "$RESPONSE" | jq -r '.increased // false')
+          # APIを呼び出し、エラーハンドリングを追加
+          HTTP_STATUS=$(curl -s -w "%{http_code}" -o response.json "$API_URL")
+          
+          echo "HTTP Status: $HTTP_STATUS"
+          
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "API call failed with status: $HTTP_STATUS"
+            echo "Response content:"
+            cat response.json
+            exit 1
+          fi
+          
+          echo "API Response:"
+          cat response.json
+          
+          # JSONから値を抽出、エラーハンドリング付き
+          if ! CURRENT_TVL=$(jq -r '.currentTvl // 0' response.json); then
+            echo "Failed to parse currentTvl from response"
+            exit 1
+          fi
+          
+          if ! INCREASED=$(jq -r '.increased // false' response.json); then
+            echo "Failed to parse increased from response"
+            exit 1
+          fi
+          
+          if ! SUCCESS=$(jq -r '.success // false' response.json); then
+            echo "Failed to parse success from response"
+            exit 1
+          fi
           
           echo "current_tvl=$CURRENT_TVL" >> $GITHUB_OUTPUT
           echo "increased=$INCREASED" >> $GITHUB_OUTPUT
+          echo "success=$SUCCESS" >> $GITHUB_OUTPUT
           
-          echo "Current TVL: $CURRENT_TVL"
-          echo "Increased: $INCREASED"
+          echo "Parsed values:"
+          echo "- Current TVL: $CURRENT_TVL"
+          echo "- Increased: $INCREASED"
+          echo "- Success: $SUCCESS"
+          
+          # APIが失敗を返した場合
+          if [ "$SUCCESS" != "true" ]; then
+            echo "API returned success=false"
+            exit 1
+          fi
+          
+      - name: Validate TVL value
+        run: |
+          CURRENT_TVL="${{ steps.api_call.outputs.current_tvl }}"
+          
+          # TVL値が数値かチェック
+          if ! [[ "$CURRENT_TVL" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "Invalid TVL value: $CURRENT_TVL"
+            exit 1
+          fi
+          
+          echo "TVL value validated: $CURRENT_TVL"
           
       - name: Save current TVL value
         run: |
           CURRENT_TVL="${{ steps.api_call.outputs.current_tvl }}"
           echo "$CURRENT_TVL" > tvl_value.txt
-          echo "Saved TVL value: $CURRENT_TVL"
+          echo "Saved TVL value to file: $CURRENT_TVL"
           
-      - name: Commit TVL value if changed
+      - name: Configure Git
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           
+      - name: Commit TVL value if changed
+        run: |
+          CURRENT_TVL="${{ steps.api_call.outputs.current_tvl }}"
+          
+          # ファイルに変更があるかチェック
           if git diff --quiet tvl_value.txt; then
-            echo "No changes to TVL value"
+            echo "No changes to TVL value file"
           else
+            echo "TVL value file changed, committing..."
             git add tvl_value.txt
-            git commit -m "Update TVL value to ${{ steps.api_call.outputs.current_tvl }}"
-            git push
-            echo "TVL value updated and committed"
+            
+            if git commit -m "Update TVL value to $CURRENT_TVL"; then
+              echo "Successfully committed TVL value"
+              
+              if git push; then
+                echo "Successfully pushed changes"
+              else
+                echo "Warning: Failed to push changes, but continuing..."
+              fi
+            else
+              echo "Warning: Failed to commit changes, but continuing..."
+            fi
           fi
           
       - name: Log monitoring result
         run: |
-          if [ "${{ steps.api_call.outputs.increased }}" = "true" ]; then
-            echo "🚀 TVL increased! Notification sent to Discord."
+          CURRENT_TVL="${{ steps.api_call.outputs.current_tvl }}"
+          INCREASED="${{ steps.api_call.outputs.increased }}"
+          LAST_TVL="${{ steps.get_tvl.outputs.last_tvl }}"
+          
+          echo "=== TVL Monitoring Result ==="
+          echo "Previous TVL: $LAST_TVL"
+          echo "Current TVL: $CURRENT_TVL"
+          echo "Increased: $INCREASED"
+          
+          if [ "$INCREASED" = "true" ]; then
+            DIFFERENCE=$(echo "$CURRENT_TVL - $LAST_TVL" | bc -l)
+            echo "🚀 TVL increased by $DIFFERENCE! Discord notification sent."
           else
             echo "📊 TVL check completed. No increase detected."
           fi
+          
+      - name: Cleanup
+        run: |
+          rm -f response.json
+        if: always()
