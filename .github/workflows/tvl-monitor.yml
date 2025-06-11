@@ -2,7 +2,7 @@ name: Liminal TVL Monitor
 
 on:
   schedule:
-    - cron: '*/2 * * * *'  # 2分毎に実行
+    - cron: '*/1 * * * *'  # 2分毎に実行
   workflow_dispatch:  # 手動実行も可能
 
 jobs:
